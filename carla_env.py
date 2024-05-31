@@ -122,7 +122,6 @@ class CarlaEnv(gym.Env):
                     #self.traffic_manager.set_hybrid_physics_radius(70.0)
 
 
-        # Car, sensors, etc. We create them every episode then destroy
         self.collision_hist = []
         self.lane_invasion_hist = []
         
@@ -137,7 +136,7 @@ class CarlaEnv(gym.Env):
         # self.episode += 1
 
         # When Carla breaks (stops working) or spawn point is already occupied, spawning a car throws an exception
-        # We allow it to try for 3 seconds then forgive
+        # allow it to try for 3 seconds then forgive
         spawn_start = time.time()
         while True:
             try:
@@ -164,7 +163,7 @@ class CarlaEnv(gym.Env):
             spectator.set_transform(carla.Transform(self.curr_loc + carla.Location(x=0, z=70), carla.Rotation(pitch=-90.0)))              
                 
 
-        # Append actor to a list of spawned actors, we need to remove them later,after episode ends
+        # Append actor to a list of spawned actors, need to remove them after episode ends
         self.actor_list.append(self.vehicle)
 
         if 'rgb' in self.sensors:
@@ -220,7 +219,6 @@ class CarlaEnv(gym.Env):
 
         self.world.tick()
 
-        # Wait for a camera to send first image (important at the beginning of first episode)
         while self.front_image_Queue.empty():
             logging.debug("waiting for camera to be ready")
             time.sleep(0.01)
@@ -292,7 +290,7 @@ class CarlaEnv(gym.Env):
         logging.debug('{}, {}, {}'.format(action.throttle, action.steer, action.brake))
         self.vehicle.apply_control(action)
 
-        # Calculate speed in km/h from car's velocity (3D vector)
+        # Calculate speed in km/h from car's velocity
         v = self.vehicle.get_velocity()
         kmh = 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
 
@@ -651,140 +649,3 @@ class CarlaEnv(gym.Env):
             steer_angle = calc_steering_angle(alpha, ld)
     
             return steer_angle
-
-'''
-    def pure_pursuit(self): #function not used
-        L = 2.875 # Wheelbase of the vehicle (distance between the front and rear axles)
-        Kdd = 4.0 # Look-ahead distance gain factor
-        alpha_prev = 0 # Previous steering angle error or heading error
-        delta_prev = 0 # Previous steering angle
-
-        #transform = carla.Transform(carla.Location(x=193.5, y=150, z=1.85), carla.Rotation(yaw=270, pitch=0, roll=0))
-        #transform = carla.Transform(carla.Location(x=193.5, y=150, z=1.85), carla.Rotation(yaw=270, pitch=0, roll=0)) #town2 90deg left1
-        #transform = carla.Transform(carla.Location(x=183, y=105.5, z=1.85), carla.Rotation(yaw=180, pitch=0, roll=0)) #town2 straight1
-        #transform = carla.Transform(carla.Location(x=50, y=105.5, z=1.85), carla.Rotation(yaw=180, pitch=0, roll=0)) #town2 90deg left2
-        #transform = carla.Transform(carla.Location(x=18, y=105.5, z=1.85), carla.Rotation(yaw=180, pitch=0, roll=0)) #town2 90deg left2
-        #transform = carla.Transform(carla.Location(x=-7, y=160, z=1.85), carla.Rotation(yaw=90, pitch=0, roll=0)) #town2 90deg left3
-        #transform = carla.Transform(carla.Location(x=-7, y=235, z=1.85), carla.Rotation(yaw=90, pitch=0, roll=0)) #town2 straight
-        transform = carla.Transform(carla.Location(x=-7, y=285, z=1.85), carla.Rotation(yaw=90, pitch=0, roll=0)) #town2 straight
-        #transform = carla.Transform(carla.Location(x=12, y=306.5, z=1.85), carla.Rotation(yaw=0, pitch=0, roll=0)) #town2 90deg left5
-        #transform = carla.Transform(carla.Location(x=160, y=306.5, z=1.85), carla.Rotation(yaw=0, pitch=0, roll=0)) #town2 90deg left6
-        #transform = carla.Transform(carla.Location(x=193.5, y=270.5, z=1.85), carla.Rotation(yaw=-90, pitch=0, roll=0)) #town2 straight
-        #transform = carla.Transform(carla.Location(x=193.5, y=212, z=1.85), carla.Rotation(yaw=-90, pitch=0, roll=0)) #town2 straight
-         
-        #transform = self._get_start_transform()
-
-        waypoints = self.map.generate_waypoints(2.0)
-
-        vehicle_loc = self.vehicle.get_location() #current vehicle location x,y,z coordinates
-        wp = self.map.get_waypoint(vehicle_loc, project_to_road=True, lane_type=carla.LaneType.Driving)
-
-        waypoint_list = [] #stores coordinates x and y
-        waypoint_obj_list = [] #store the full waypoint objects with location, orientation, and lane type
-
-        # def display(disp=False):
-        #     if disp:
-        #         print("--"*20)
-        #         print("\nMin Index= ", min_index)
-        #         print("Forward Vel= %.3f m/s"%vf)
-        #         print("Lookahead Dist= %.2f m"%ld)
-        #         print("Alpha= %.5f rad"%alpha)
-        #         print("Delta= %.5f rad"%steer_angle)
-        #         print("Error= %.3f m"%e)
-
-        def calc_steering_angle(alpha, ld): #takes heading error and look ahead distance
-            delta_prev = 0 # Initialize the previous steering angle
-            delta = math.atan2(2*L*np.sin(alpha), ld) # Calculate the new steering angle
-            delta = np.fmax(np.fmin(delta, 1.0), -1.0) # Clip the steering angle within [-1, 1]
-            if math.isnan(delta): # Check if the calculated angle is NaN
-                delta = delta_prev # If NaN, revert to the previous steering angle
-            else:
-                delta_prev = delta # Update the previous steering angle
-    
-            return delta # Return the calculated steering angle
-
-        def get_target_wp_index(veh_location, waypoint_list): #takes current location and waypoint list
-            dxl, dyl = [], [] # Initialize lists to store the differences in x and y coordinates
-            for i in range(len(waypoint_list)):
-                dx = abs(veh_location.x - waypoint_list[i][0]) #absolute difference in x coordinates
-                dxl.append(dx) # Append the difference to the list
-                dy = abs(veh_location.y - waypoint_list[i][1])
-                dyl.append(dy)
-
-            dist = np.hypot(dxl, dyl) #Euclidean distance from the vehicle location to each waypoint
-            idx = np.argmin(dist) + 4 #index of the waypoint with the minimum distance, with an offset of 4
-
-            # take closest waypoint, else last wp
-            if idx < len(waypoint_list):
-                tx = waypoint_list[idx][0] #x coordinate of the target waypoint
-                ty = waypoint_list[idx][1]
-            else:
-                tx = waypoint_list[-1][0] #If the index exceeds the list length, set the target waypoint to the last one
-                ty = waypoint_list[-1][1]
-
-            return idx, tx, ty, dist #index of closest waypoint+4, coordinates of idx waypoint, distance vector from each waypoint to vehcile location
-        
-        def get_lookahead_dist(vf, idx, waypoint_list, dist):
-            ld = Kdd*vf
-            return ld
-
-        # Debug Helper, to visualize the waypoints, starting location for drawing is loc1
-        def draw(loc1, loc2=None, type=None):
-            if type == "string": #draws X at loc1 that lasts for 2000ms
-                world.debug.draw_string(loc1, "X",
-                            life_time=2000, persistent_lines=True)
-            elif type == "line": #draws a green line between loc1 and loc2 that lasts for 0.5 sec
-                world.debug.draw_line(loc1, loc2, thickness=0.8,
-                color=carla.Color(r=0, g=255, b=0),
-                        life_time=0.5, persistent_lines=True)
-            elif type == "string2": #draws a green X at loc1 that lasts for 0.3 sec
-                world.debug.draw_string(loc1, "X", color=carla.Color(r=0, g=255, b=0),
-                            life_time=0.3, persistent_lines=True)
-
-        # Generate waypoints, waypoint list using the vehicle location-wp
-        noOfWp = 100 #total number of waypoints to generate
-        t = 0
-        while t < noOfWp:
-            wp_next = wp.next(2.0) #Generates the next waypoint(s) from the current waypoint wp, with a spacing of 2.0 meters between each waypoint
-            if len(wp_next) > 1: #if multiple waypoints returned
-                wp = wp_next[1] #select the second waypoint
-            else: #If only one waypoint is returned
-                wp = wp_next[0] #select that waypoint
-
-        waypoint_obj_list.append(wp) #Appends the selected waypoint object to waypoint_obj_list
-        waypoint_list.insert(t, (wp.transform.location.x, wp.transform.location.y)) # Inserts a tuple (x, y) representing the waypoint's location into waypoint_list at index t
-        #draw(wp.transform.location, type="string") #for visualization of waypoints
-        t += 1
-
-        # path tracking
-        t = 0
-        while t < noOfWp:
-            veh_transform = self.vehicle.get_transform() #current position and orientation of the vehicle
-            veh_location = self.vehicle.get_location() #current location of the vehicle
-            veh_vel = self.vehicle.get_velocity() #current velocity of the vehicle
-            vf = np.sqrt(veh_vel.x**2 + veh_vel.y**2) #forward velocity of the vehicle
-            vf = np.fmax(np.fmin(vf, 2.5), 0.1) #Clips the forward velocity within the range [0.1, 2.5]
-
-            min_index, tx, ty, dist = get_target_wp_index(veh_location, waypoint_list)
-            ld = get_lookahead_dist(vf, min_index, waypoint_list, dist)
-
-
-            yaw = np.radians(veh_transform.rotation.yaw)
-            alpha = math.atan2(ty-veh_location.y, tx-veh_location.x) - yaw
-            # alpha = np.arccos((ex*np.cos(yaw)+ey*np.sin(yaw))/ld)
-
-            if math.isnan(alpha):
-                alpha = alpha_prev
-            else:
-                alpha_prev = alpha
-
-            e = np.sin(alpha)*ld
-    
-            steer_angle = calc_steering_angle(alpha, ld)
-
-            #draw(waypoint_obj_list[min_index].transform.location, type="string2")
-
-            t += 1
-
-            return steer_angle
-'''
