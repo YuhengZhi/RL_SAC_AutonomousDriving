@@ -1,3 +1,5 @@
+import os
+
 import carla
 import subprocess
 import logging
@@ -33,7 +35,9 @@ class CarlaEnv:
 
     def spawn_traffic(self):
         # Command to run the generate_traffic.py script
-        traffic_script_path = "/home/aku8wk/Carla/CARLA_0.9.15/PythonAPI/examples/generate_traffic.py"
+        py_api_path = os.path.join(carla.__path__[0].split('PythonAPI')[0], 'PythonAPI')
+        traffic_script_path = os.path.join(py_api_path, 'examples', 'generate_traffic.py')
+        # traffic_script_path = "/home/aku8wk/Carla/CARLA_0.9.15/PythonAPI/examples/generate_traffic.py"
         num_vehicles = 80
         command = ['python3', traffic_script_path, '-n', str(num_vehicles)]
         

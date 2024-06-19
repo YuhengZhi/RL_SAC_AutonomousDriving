@@ -96,8 +96,9 @@ def setup(
         try:
             client = carla.Client("localhost", port)  # pylint: disable=no-member
             client.set_timeout(client_timeout)
-            client.load_world(map_name='Town02') #set town, or just set town to assert one of the 5
+            client.load_world(map_name=town) #set town, or just set town to assert one of the 5
             world = client.get_world()
+            original_settings = world.get_settings()
             world.set_weather(carla.WeatherParameters.ClearNoon)  # pylint: disable=no-member
             # if hasattr(world, 'set_no_rendering_mode'):                
             #     world.set_no_rendering_mode(True)  # No rendering mode
@@ -111,13 +112,13 @@ def setup(
             logging.debug("Server version: {}".format(client.get_server_version()))
             logging.debug("Client version: {}".format(client.get_client_version()))
             #return client, world, frame, server
-            return client, world, frame
+            return client, world, frame, original_settings
         except RuntimeError as msg: #carla connection attempt failed
             logging.debug(msg)
             attempts += 1
-            logging.debug("Stopping CARLA server at port={}".format(port))
-            os.killpg(server.pid, signal.SIGKILL)
-            atexit.unregister(lambda: os.killpg(server.pid, signal.SIGKILL))
+            # logging.debug("Stopping CARLA server at port={}".format(port))
+            # os.killpg(server.pid, signal.SIGKILL)
+            # atexit.unregister(lambda: os.killpg(server.pid, signal.SIGKILL))
 
     logging.debug(
         "Failed to connect to CARLA after {} attempts".format(num_max_restarts))

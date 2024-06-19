@@ -1,0 +1,56 @@
+# Python
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+*.pyi
+*.pyz
+*.pyw
+*.pyz/
+*.pyw/
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+
+# Virtual Environment
+venv/
+env/
+.venv/
+.venv.bak/
+env.bak/
+.venv.bak*/
+env.bak*/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb_checkpoints/
+
+# Logs
+*.log
+logs
+
+# IDE
+.idea/
+.vscode/
+
+# Data
+data/
+*.csv
+*.json
+*.h5
+*.pickle
+
+# Model checkpoints
+checkpoints/
+
+# Compiled files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Miscellaneous
+.DS_Store
+Thumbs.db

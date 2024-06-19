@@ -3,15 +3,15 @@ import os
 import signal
 import sys
 import carla
-import gym
+import gymnasium as gym
 import time
 import random
 import numpy as np
 import math
 from queue import Queue
-from misc import dist_to_roadline, exist_intersection
-from gym import spaces
-from gym.spaces import Discrete
+# from misc import dist_to_roadline, exist_intersection
+from gymnasium import spaces
+from gymnasium.spaces import Discrete
 from setup import setup
 from absl import logging
 import graphics
@@ -19,7 +19,7 @@ import pygame
 import subprocess
 import glob
 
-logging.set_verbosity(logging.INFO)
+logging.set_verbosity(logging.DEBUG)
 
 # Carla environment
 class CarlaEnv(gym.Env):
@@ -27,15 +27,18 @@ class CarlaEnv(gym.Env):
     metadata = {'render.modes': ['human']}
 
     def __init__(self, town, fps, im_width, im_height, repeat_action, start_transform_type, sensors,
-                 action_type, enable_preview, enable_spectator, steps_per_episode, playing=False, timeout=60):
+                 action_type, enable_preview, enable_spectator, steps_per_episode, playing=False, timeout=10,
+                 enable_trailer=True, soft_lane_invasion=True):
 
         #self.client, self.world, self.frame, self.server = setup(town=town, fps=fps, client_timeout=timeout)
-        self.client, self.world, self.frame = setup(town=town, fps=fps, client_timeout=timeout)
+        self.client, self.world, self.frame, self.original_sim_settings = setup(town=town, fps=fps, client_timeout=timeout, num_max_restarts=5)
         self.client.set_timeout(5.0)
         self.map = self.world.get_map()
         blueprint_library = self.world.get_blueprint_library()
-        #self.truck = blueprint_library.filter('vehicle.carlamotors.firetruck')[0] #vehicle set here
-        self.truck = blueprint_library.filter('vehicle.dodge.charger_2020')[0]
+        # self.vehicle_bp = blueprint_library.filter('vehicle.carlamotors.firetruck')[0] #vehicle set here
+        # self.vehicle_bp = blueprint_library.filter('vehicle.dodge.charger_2020')[0]
+        self.vehicle_bp = blueprint_library.filter('vehicle.daf.dafxf')[0] #vehicle set here
+        self.trailer_bp = blueprint_library.filter('vehicle.trailer.trailer')[0] if enable_trailer else None
         self.im_width = im_width
         self.im_height = im_height
         self.repeat_action = repeat_action
@@ -48,21 +51,27 @@ class CarlaEnv(gym.Env):
         self.playing = playing
         self.preview_camera_enabled = enable_preview
         self.spectator_view = enable_spectator #added1
+        self.spectator = None # self.world.get_spectator() if enable_spectator else None
         self.traffic_manager = self.client.get_trafficmanager() #added for pure pursuit
         self.traffic_manager.global_percentage_speed_difference(60.0)  # Vehicles move at 40% of their top speed
+        
+        self.soft_lane_invasion = soft_lane_invasion
 
 
         # self.episode = 0
         #self.spawn_traffic() #comment for no traffic
 
         #comment for render-mode on
-        config_script_path = "/home/aku8wk/Carla/CARLA_0.9.15/PythonAPI/util/config.py"
-        try:
-            logging.debug("Running config script to disable rendering: {}".format(config_script_path))
-            subprocess.run([config_script_path, "--no-rendering"], check=True)
-        except subprocess.CalledProcessError as e:
-            logging.error("Failed to run config script: {}".format(e))
-            sys.exit(1)
+        # config_script_path = os.path.join(carla.__path__[0].split('PythonAPI')[0], 'PythonAPI/util/config.py') # "/home/aku8wk/Carla/CARLA_0.9.15/PythonAPI/util/config.py"
+        # try:
+        #     logging.debug("Running config script to disable rendering: {}".format(config_script_path))
+        #     subprocess.run([config_script_path, "--no-rendering"], check=True)
+        # except subprocess.CalledProcessError as e:
+        #     logging.error("Failed to run config script: {}".format(e))
+        #     sys.exit(1)
+        settings = self.world.get_settings()
+        settings.no_rendering_mode = not enable_spectator
+        self.world.apply_settings(settings)
 
 
 
@@ -97,7 +106,8 @@ class CarlaEnv(gym.Env):
         return seed
 
     # Resets environment for new episode
-    def reset(self):
+    def reset(self, seed=None):
+        logging.debug("Resetting environment ... ")
         self._destroy_agents()
         self.actor_list = []
 
@@ -112,7 +122,7 @@ class CarlaEnv(gym.Env):
                     npc.set_autopilot(True, self.traffic_manager.get_port()) # Control by traffic manager
                     self.traffic_manager.ignore_lights_percentage(npc, 0)  # Follow traffic lights
                     self.traffic_manager.ignore_signs_percentage(npc, 0)  # Follow traffic signs
-                    self.traffic_manager.auto_lane_change(npc, False)  # Allow lane changing
+                    self.traffic_manager.auto_lane_change(npc, True)  # Allow lane changing
                     self.traffic_manager.distance_to_leading_vehicle(npc, 3) # Maintain distance
                     self.traffic_manager.random_left_lanechange_percentage(npc,0)
                     self.traffic_manager.random_right_lanechange_percentage(npc,0)
@@ -120,10 +130,10 @@ class CarlaEnv(gym.Env):
                     self.traffic_manager.set_global_distance_to_leading_vehicle(3)
                     self.traffic_manager.set_hybrid_physics_mode(False)
                     #self.traffic_manager.set_hybrid_physics_radius(70.0)
+        logging.debug("Traffic spawned")
 
-
-        self.collision_hist = []
-        self.lane_invasion_hist = []
+        # self.collision_hist = []
+        # self.lane_invasion_hist = []
         
         self.frame_step = 0
         self.out_of_loop = 0
@@ -138,33 +148,48 @@ class CarlaEnv(gym.Env):
         # When Carla breaks (stops working) or spawn point is already occupied, spawning a car throws an exception
         # allow it to try for 3 seconds then forgive
         spawn_start = time.time()
-        while True:
+        # while True:
+        
+        ego_spawn_failure_cnt = 0
+        max_ego_spawn_failure = 1
+        while ego_spawn_failure_cnt < max_ego_spawn_failure:
             try:
+                # try:
                 # Get random spot from a list from predefined spots and try to spawn a car there
                 self.start_transform = self._get_start_transform()
                 #print(self.start_transform) #printing spawn location, can comment
                 self.curr_loc = self.start_transform.location
-                self.vehicle = self.world.spawn_actor(self.truck, self.start_transform)                               
-                break
-            except Exception as e:
-                logging.error('Error carla 141 {}'.format(str(e)))
-                time.sleep(0.01)
+                self.vehicle = self.world.spawn_actor(self.vehicle_bp, self.start_transform)
+                # Append actor to a list of spawned actors, need to remove them after episode ends
+                self.actor_list.append(self.vehicle)
 
-            # If that can't be done in 3 seconds - forgive (and allow main process to handle for this problem)
-            if time.time() > spawn_start + 3:
-                raise Exception('Can\'t spawn a car')
+                if self.trailer_bp is not None:
+                    forward_vector = self.start_transform.get_forward_vector() * 5.2
+                    trailer_start_transform = carla.Transform(self.start_transform.location - forward_vector, self.start_transform.rotation)
+                    self.trailer = self.world.spawn_actor(self.trailer_bp, trailer_start_transform)
+                    self.actor_list.append(self.trailer)
+                else:
+                    self.trailer = None
+                
+                break
+            except RuntimeError as e:
+                ego_spawn_failure_cnt += 1
+                logging.warn(f'Error spawning ego truck: {e}. Trial {ego_spawn_failure_cnt}/{max_ego_spawn_failure}')
+    
+        # break
+        # except Exception as e:
+        #     logging.error('Error carla 141 {}'.format(str(e)))
+        #     time.sleep(0.01)
+        logging.debug("Ego truck spawned")
+
+        # If that can't be done in 3 seconds - forgive (and allow main process to handle for this problem)
+        # if time.time() > spawn_start + 3:
+        #     raise Exception('Can\'t spawn a car')
 
         bound_x = self.vehicle.bounding_box.extent.x #to set the boundaries of agent- half of width & length
         bound_y = self.vehicle.bounding_box.extent.y
         bound_z = self.vehicle.bounding_box.extent.z
-
-        if self.vehicle is not None: #if-block added for spectator camera
-            spectator = self.world.get_spectator()
-            spectator.set_transform(carla.Transform(self.curr_loc + carla.Location(x=0, z=70), carla.Rotation(pitch=-90.0)))              
                 
-
-        # Append actor to a list of spawned actors, need to remove them after episode ends
-        self.actor_list.append(self.vehicle)
 
         if 'rgb' in self.sensors:
             self.rgb_cam = self.world.get_blueprint_library().find('sensor.camera.rgb')
@@ -197,10 +222,20 @@ class CarlaEnv(gym.Env):
             self.preview_sensor.listen(self.preview_image_Queue.put)
             self.actor_list.append(self.preview_sensor)
         
+        logging.debug("Cameras spawned")
+        
+        if self.spectator_view:
+            self.spectator = self.world.get_spectator()
+            self.spectator.set_transform(carla.Transform(self.curr_loc + carla.Location(z=50), carla.Rotation(pitch=-90.0)))
+            logging.debug("Spectator camera spawned")
+        
 
         #some workarounds
-        self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=1.0))
-        time.sleep(4)
+        self.vehicle.apply_control(carla.VehicleControl(throttle=1.0, brake=0.0))
+        work_around_frames = 80
+        for _ in range(work_around_frames):
+            self.world.tick()
+        # time.sleep(4)
 
         # Collision history is a list callback is going to append to (we brake simulation on a collision)
         self.collision_hist = []
@@ -208,14 +243,22 @@ class CarlaEnv(gym.Env):
 
         colsensor = self.world.get_blueprint_library().find('sensor.other.collision')
         lanesensor = self.world.get_blueprint_library().find('sensor.other.lane_invasion')
-        self.colsensor = self.world.spawn_actor(colsensor, carla.Transform(), attach_to=self.vehicle)
+        self.colsensor = self.world.spawn_actor(colsensor, carla.Transform(carla.Location(x=5.0)), attach_to=self.vehicle)
+        self.vehicle.set_collisions(True)
+        self.colsensor.set_collisions(True)
+        self.trailer_colsensor = self.world.spawn_actor(colsensor, carla.Transform(), attach_to=self.trailer) if self.trailer is not None else None
         self.lanesensor = self.world.spawn_actor(lanesensor, carla.Transform(), attach_to=self.vehicle)
-        self.colsensor.listen(lambda event: self._collision_data(event))
+        self.colsensor.listen(lambda event: self._collision_data(event, ignore_actor_ids=set([self.trailer.id])))
         self.lanesensor.listen(lambda event: self._lane_invasion_data(event))
-        #self.colsensor.listen(self._collision_data)
-        #self.lanesensor.listen(self._lane_invasion_data)
+        if self.trailer_colsensor is not None:
+            self.trailer.set_collisions(True)
+            self.trailer_colsensor.set_collisions(True)
+            self.trailer_colsensor.listen(lambda event: self._collision_data(event, ignore_actor_ids=set([self.vehicle.id])))
         self.actor_list.append(self.colsensor)
+        if self.trailer_colsensor is not None:
+            self.actor_list.append(self.trailer_colsensor)
         self.actor_list.append(self.lanesensor)
+        logging.debug("Collision and lane invasion sensors spawned")
 
         self.world.tick()
 
@@ -232,19 +275,25 @@ class CarlaEnv(gym.Env):
         image = image.reshape((self.im_height, self.im_width, -1))
         image = image[:, :, :3]
 
-        return image
+        logging.debug("Environment reset done.")
+
+        return image, {}
 
     def step(self, action): #executing single action, _step is defined below
         total_reward = 0
         for _ in range(self.repeat_action):
-            obs, rew, done, info = self._step(action)
+            obs, rew, terminated, truncted, info = self._step(action)
             total_reward += rew
-            if done:
+            if terminated or truncted:
                 break
-        return obs, total_reward, done, info
+        return obs, total_reward, terminated, truncted, info
 
     # Steps environment
     def _step(self, action):
+        if self.spectator is not None:
+            curr_loc = self.vehicle.get_location()
+            self.spectator.set_transform(carla.Transform(curr_loc + carla.Location(z=50), carla.Rotation(pitch=-90.0)))
+
         self.world.tick()
         #self.render()
             
@@ -252,23 +301,25 @@ class CarlaEnv(gym.Env):
 
         # Apply control to the vehicle based on an action
         if self.action_type == 'continuous':
-            
             if action[0] > 0: #accelerating, set brake to 0
                 action = carla.VehicleControl(throttle=float(action[0]), steer=float(action[1]), brake=0)
             else: #decelerating, set throttle to 0, take negative of first element as brake
                 action = carla.VehicleControl(throttle=0, steer=float(action[1]), brake= -float(action[0]))
         
         elif self.action_type == 'fix_throttle':
-            fixed_throttle = 0.3
+            fixed_throttle = 0.1
             steering_action = action[0]
             action = carla.VehicleControl(throttle=fixed_throttle, steer=float(steering_action), brake=0)
 
         elif self.action_type == 'lateral_purepursuit':
             #give throttle here
+            action[0] = max(0.01, action[0])
             if action[0] > 0: # Accelerating, set brake to 0
                 action = carla.VehicleControl(throttle=float(action[0]), steer = self.pure_pursuit(), brake=0)
             else: # Decelerating, set throttle to 0, take negative of first element as brake
                 action = carla.VehicleControl(throttle=0, steer = self.pure_pursuit(), brake=-float(action[0]))
+            # action.throttle = 1.0
+            # action.brake = 0.0
 
         elif self.action_type == 'discrete':
             #if action[0] == 0:
@@ -318,22 +369,34 @@ class CarlaEnv(gym.Env):
 
         # dis_to_left, dis_to_right, sin_diff, cos_diff = dist_to_roadline(self.map, self.vehicle)
 
-        done = False
+        terminated = False
+        truncated = False
         reward = 0
         info = dict()
 
         # # If car collided - end and episode and send back a penalty
         if len(self.collision_hist) != 0:
-            done = True
+            terminated = True
+            truncated = False
             reward += -100
-            self.collision_hist = []
+            self.collision_hist = [] # TODO: these should be in reset
             self.lane_invasion_hist = []
         
-        if not self.action_type == 'lateral_purepursuit': #pure pursuit may lead to slight lane violation
-            if len(self.lane_invasion_hist) != 0:
-                done = True
+        if len(self.lane_invasion_hist) != 0:
+            if self.soft_lane_invasion:
+                reward += self._soft_lane_invasion_penalty()
+            elif not self.action_type == 'lateral_purepursuit': #pure pursuit may lead to slight lane violation
+                terminated = True
+                truncated = False
                 reward += -100
+                self.collision_hist = []
                 self.lane_invasion_hist = []
+        
+        verbose = True
+        if verbose:
+            # self.world.debug.draw_box(carla.BoundingBox(self.colsensor.bounding_box), self.colsensor.get_transform(), 0, carla.Color(255,0,0,0), 0.1)
+            self.world.debug.draw_box(self.colsensor.bounding_box, self.colsensor.bounding_box.rotation, 0.2, carla.Color(255,0,0,0), 0.105)
+
 
         # if len(self.lane_invasion_hist) != 0:
         #     done = True
@@ -364,7 +427,8 @@ class CarlaEnv(gym.Env):
         #     reward -= math.exp(-dis_to_right)
         
         if self.frame_step >= self.steps_per_episode:
-            done = True
+            terminated = False
+            truncated = True
 
         # if not self._on_highway(): #if vehicle is out of highway for more than 4sec, end episode
         #    self.out_of_loop += 1
@@ -375,14 +439,14 @@ class CarlaEnv(gym.Env):
 
         # self.total_reward += reward
 
-        if done:
+        if terminated or truncated:
             # info['episode'] = {}
             # info['episode']['l'] = self.frame_step
             # info['episode']['r'] = reward
             logging.debug("Env lasts {} steps, restarting ... ".format(self.frame_step))
-            self._destroy_agents()
+            # self._destroy_agents()
         
-        return image, reward, done, info
+        return image, reward, terminated, truncated, info
     
 #    def close(self):
 #        if self.carla_process.is_alive():
@@ -390,6 +454,10 @@ class CarlaEnv(gym.Env):
     #     logging.info("Closes the CARLA server with process PID {}".format(self.server.pid))
     #     os.killpg(self.server.pid, signal.SIGKILL)
     #     atexit.unregister(lambda: os.killpg(self.server.pid, signal.SIGKILL))
+    def close(self):
+        self._destroy_agents()
+        self.world.apply_settings(self.original_sim_settings)
+
 
 
   
@@ -445,7 +513,9 @@ class CarlaEnv(gym.Env):
 
     def spawn_traffic(self):
         # Command to run the generate_traffic.py script
-        traffic_script_path = "/home/aku8wk/Carla/CARLA_0.9.15/PythonAPI/examples/generate_traffic.py"
+        py_api_path = os.path.join(carla.__path__[0].split('PythonAPI')[0], 'PythonAPI')
+        traffic_script_path = os.path.join(py_api_path, 'examples/generate_traffic.py')
+        # traffic_script_path = "/home/aku8wk/Carla/CARLA_0.9.15/PythonAPI/examples/generate_traffic.py"
         num_vehicles = 80
         command = ['python3', traffic_script_path, '-n', str(num_vehicles)]
         
@@ -461,7 +531,9 @@ class CarlaEnv(gym.Env):
     
     def _destroy_agents(self):
 
+        time.sleep(0.1)
         for actor in self.actor_list:
+            logging.debug("Destroying actor {}".format(actor))
 
             # If it has a callback attached, remove it first
             if hasattr(actor, 'is_listening') and actor.is_listening:
@@ -473,10 +545,21 @@ class CarlaEnv(gym.Env):
 
         self.actor_list = []
 
-    def _collision_data(self, event):
+    def _soft_lane_invasion_penalty(self):
+        #return -1.0
+        return -1.0
+
+    def _collision_data(self, event, ignore_actor_ids=None):
+        # raise RuntimeError
 
         # What we collided with and what was the impulse
-        collision_actor_id = event.other_actor.type_id
+        self_actor_type_id = event.actor.type_id
+        self_actor_id = event.actor.id
+        collision_actor_type_id = event.other_actor.type_id
+        collision_actor_id = event.other_actor.id
+        if ignore_actor_ids is not None and collision_actor_id in ignore_actor_ids:
+            logging.debug(f"Ignoring collision between {self_actor_type_id}:{self_actor_id} and {collision_actor_type_id}:{collision_actor_id}")
+            return
         collision_impulse = math.sqrt(event.normal_impulse.x ** 2 + event.normal_impulse.y ** 2 + event.normal_impulse.z ** 2)
 
         # # Filter collisions
@@ -486,6 +569,7 @@ class CarlaEnv(gym.Env):
 
         # Add collision
         self.collision_hist.append(collision_impulse)
+        logging.debug(f"Collision between {self_actor_type_id}:{self_actor_id} and {collision_actor_type_id}:{collision_actor_id} with impulse {collision_impulse}")
     
     def _lane_invasion_data(self, event):
         # to filter lane invasions
@@ -551,13 +635,17 @@ class CarlaEnv(gym.Env):
             #transform = carla.Transform(carla.Location(x=18, y=105.5, z=1.85), carla.Rotation(yaw=180, pitch=0, roll=0)) #town2 90deg left2
             #transform = carla.Transform(carla.Location(x=-7, y=160, z=1.85), carla.Rotation(yaw=90, pitch=0, roll=0)) #town2 90deg left3
             #transform = carla.Transform(carla.Location(x=-7, y=235, z=1.85), carla.Rotation(yaw=90, pitch=0, roll=0)) #town2 straight
-            transform = carla.Transform(carla.Location(x=-7, y=285, z=1.85), carla.Rotation(yaw=90, pitch=0, roll=0)) #town2 straight
+            # transform = carla.Transform(carla.Location(x=-7, y=285, z=1.85), carla.Rotation(yaw=90, pitch=0, roll=0)) #town2 straight
             #transform = carla.Transform(carla.Location(x=12, y=306.5, z=1.85), carla.Rotation(yaw=0, pitch=0, roll=0)) #town2 90deg left5
             #transform = carla.Transform(carla.Location(x=160, y=306.5, z=1.85), carla.Rotation(yaw=0, pitch=0, roll=0)) #town2 90deg left6
             #transform = carla.Transform(carla.Location(x=193.5, y=270.5, z=1.85), carla.Rotation(yaw=-90, pitch=0, roll=0)) #town2 straight
             #transform = carla.Transform(carla.Location(x=193.5, y=212, z=1.85), carla.Rotation(yaw=-90, pitch=0, roll=0)) #town2 straight
             #vehicle_loc = carla.Location(x=100, y=200, z=0)
             #start_transform = self.map.get_waypoint(vehicle_loc, project_to_road=True, lane_type=carla.LaneType.Driving)
+
+            # x="91.460960" y="54.534821" z="0.0" pitch="0.0" roll="0.0" yaw="-145.505829"
+            z_elevate = 0.5
+            transform = carla.Transform(carla.Location(x=91.460960, y=54.534821, z=z_elevate), carla.Rotation(yaw=-145.505829, pitch=0, roll=0)) #town3 start of roundabout
             return transform
 
 

@@ -8,7 +8,7 @@ import sys
 
 # Connect to the Carla simulator
 client = carla.Client('localhost', 2000)
-client.load_world('Town02')
+client.load_world('Town03')
 world = client.get_world()
 world.set_weather(carla.WeatherParameters.ClearNoon)
 place = world.get_map()
@@ -56,7 +56,8 @@ delta_prev = 0 # Previous steering angle
 #spawn vehicle
 
 bp_lib = world.get_blueprint_library()
-vehicle_bp = bp_lib.filter('vehicle.dodge.charger_2020')[0]
+# vehicle_bp = bp_lib.filter('vehicle.dodge.charger_2020')[0]
+vehicle_bp = bp_lib.filter('vehicle.daf.dafxf')[0]
 
 # transform = carla.Transform() #vehicle's initial position and orientation
 
